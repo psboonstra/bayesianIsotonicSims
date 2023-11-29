@@ -1,0 +1,354 @@
+## ----setup, include = TRUE, echo = FALSE---------------------
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+klippy::klippy(position = c("top", "right"), tooltip_message = "Copy")
+
+
+## ------------------------------------------------------------
+library(tidyverse);
+library(knitr);
+library(kableExtra);
+library(isotonicBayes)
+source("sim_functions/varying_data_functions.R");
+
+
+## ------------------------------------------------------------
+col_types_performance <- cols(
+  priors = col_character(),
+  sim_id = col_integer(),
+  array_id = col_integer(), 
+  scenario_id = col_integer(),
+  true_prob_curve_id = col_integer(), 
+  predictor_dist_id = col_integer(), 
+  n_training = col_integer(), 
+  rmse = col_double(),
+  bias = col_double(),    
+  loglik = col_double(), 
+  kl_div = col_double(),
+  loglik_intercept = col_double(),
+  coverage_50 = col_double()
+);
+
+col_types_bayesian <- cols(
+  priors = col_character(),
+  sim_id = col_integer(),
+  array_id = col_integer(),
+  scenario_id = col_integer(),
+  true_prob_curve_id = col_integer(),
+  predictor_dist_id = col_integer(),
+  n_training = col_integer(),
+  number_divergences = col_integer(),
+  any_nan = col_integer()
+);
+
+
+col_types_models <- cols(
+  priors = col_character(),
+  sim_id = col_integer(),
+  x = col_double(),
+  array_id = col_integer(), 
+  scenario_id = col_integer(),
+  true_prob_curve_id = col_integer(), 
+  predictor_dist_id = col_integer(), 
+  n_training = col_integer(), 
+  true_prob= col_double(),     
+  fitted_prob= col_double(), 
+  lower50 = col_double(),
+  upper50 = col_double()
+);
+
+
+## ------------------------------------------------------------
+for(i in 1:(1600)) {
+  foo <- try(read_csv(paste0("out/job",i,"_performance.csv"), col_types = col_types_performance));
+  if(!"try-error" %in% class(foo)) {
+    assign(paste0("job",i,"_performance"), foo)
+  } else {
+    cat("sim ", i, ", not found\n");
+  }
+  foo <- try(read_csv(paste0("out/job",i,"_bayesian_performance.csv"), col_types = col_types_bayesian));
+  if(!"try-error" %in% class(foo)) {
+    assign(paste0("job",i,"_bayesian_performance"), foo)
+  } 
+  foo <- try(read_csv(paste0("out/job",i,"_models.csv"), col_types = col_types_models));
+  if(!"try-error" %in% class(foo)) {
+    assign(paste0("job",i,"_models.csv"), foo)
+  } 
+}
+
+raw_all_performance <-
+  bind_rows(map(str_subset(ls(), pattern = "job\\d+_performance"), get))
+raw_all_bayesian_performance <-
+  bind_rows(map(str_subset(ls(), pattern = "job\\d+_bayesian_performance"), get))
+raw_all_models <-
+  bind_rows(map(str_subset(ls(), pattern = "job\\d+_models.csv"), get))
+
+
+## ------------------------------------------------------------
+all_performance <- 
+  full_join(raw_all_performance,
+            select(raw_all_bayesian_performance,
+                   priors:n_training,tuning_param_val,
+                   number_divergences:chain_relative_diff, 
+                   kl_div) %>%
+              rename(bayes_kl_div = kl_div),
+            by = c("priors", "sim_id", "array_id",
+                   "scenario_id", "true_prob_curve_id", "predictor_dist_id",
+                   "n_training")) %>%
+  mutate(scenario_id = factor(scenario_id),
+         true_prob_curve_id = factor(true_prob_curve_id),
+         predictor_dist_id = factor(predictor_dist_id))
+
+priors_pretty = 
+  c(nonbayes1 = "Isoreg",
+    nonbayes2 = "IsoregMod",
+    brms_mo = "BRMS",
+    horseshoe1 = "HSIPV$(0.001)$", 
+    horseshoe2 = "HSIPV$(10)$", 
+    gamma1 = "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon)$",
+    gamma2 = "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/10)$",
+    gamma3 = "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/100)$",
+    gamma4 = "GAIPV$(\\tfrac{0.5}{K+1})$",
+    gamma5 = "GAIPV$(1)$") %>% 
+  factor() %>%
+  fct_inorder();
+
+
+
+#number sims
+all_performance %>%
+  group_by(true_prob_curve_id, predictor_dist_id, n_training,priors) %>%
+  count() %>%
+  group_by(true_prob_curve_id, predictor_dist_id, n_training) %>%
+  summarize(number_max_sims = max(n),
+            number_min_sims = min(n)) %>%
+  arrange(true_prob_curve_id, predictor_dist_id, n_training) %>%
+  as.data.frame();
+
+
+# Table 2 Pointwise KL divergence ----
+
+## + setup ----
+priors_to_include = 
+  c("nonbayes1",
+    "brms_mo",
+    "horseshoe1",
+    "horseshoe2",
+    "gamma1",
+    "gamma2",
+    "gamma3",
+    "gamma4",
+    "gamma5"
+  );
+
+curr_data <- 
+  all_performance %>%
+  filter(priors %in% priors_to_include) %>%
+  mutate(priors = 
+           factor(priors, 
+                  levels = priors_to_include,
+                  labels = priors_pretty[priors_to_include], 
+                  ordered = T));
+
+
+dim(curr_data);
+
+table3_colnames = c("Curve",
+                    "Prior", 
+                    "$80$",
+                    "$320$",
+                    "$80$",
+                    "$320$",
+                    "$80$",
+                    "$320$",
+                    "$80$",
+                    "$320$");
+
+table3_header = c(" " = 2, 
+                  "KL Div." = 2,
+                  "RMSE" = 2,
+                  "50% CI\nCoverage" = 2, 
+                  "Run time, s" = 2) %>% 
+  linebreak();
+
+
+table3_tall <- 
+  curr_data %>%
+  group_by(true_prob_curve_id, 
+           n_training, 
+           priors, 
+  ) %>%
+  summarize(mean_kl_div = mean(1e3 * kl_div),
+            mean_rmse = mean(1e3 * rmse), 
+            mean_coverage_50 = mean(100 * coverage_50), 
+            mean_run_time_secs = mean(run_time_secs),
+            .groups = "drop_last") %>%
+  #group_by(true_prob_curve_id,  n_training) %>%
+  mutate(best_kl_div2 = ifelse(mean_kl_div <= 1.10 * min(mean_kl_div),"\\textbf{", ""),
+         best_kl_div3 = ifelse(mean_kl_div <= 1.10 * min(mean_kl_div),"}", ""),
+         best_rmse2 = ifelse(mean_rmse <= 1.10 * min(mean_rmse),"\\textbf{", ""),
+         best_rmse3 = ifelse(mean_rmse <= 1.10 * min(mean_rmse),"}", ""),
+         best_coverage_502 = ifelse(abs(mean_coverage_50 - 50) <= 1.10 * min(abs(mean_coverage_50 - 50)), "\\textbf{", ""),
+         best_coverage_503 = ifelse(abs(mean_coverage_50 - 50) <= 1.10 * min(abs(mean_coverage_50 - 50)), "}", ""),
+         best_run_time_secs2 = ifelse(mean_run_time_secs <= 1.10 * min(mean_run_time_secs, na.rm = TRUE), "\\textbf{", ""),
+         best_run_time_secs3 = ifelse(mean_run_time_secs <= 1.10 * min(mean_run_time_secs, na.rm = TRUE), "}", "")) %>%
+  ungroup() %>%
+  arrange(true_prob_curve_id, n_training, priors) %>%
+  mutate(
+    mean_kl_div = formatC(mean_kl_div, format = "f", digits = 0),
+    pretty_kl_div = paste0(best_kl_div2,mean_kl_div, best_kl_div3),
+    mean_rmse = formatC(mean_rmse, format = "f", digits = 0),
+    pretty_rmse = paste0(best_rmse2,mean_rmse, best_rmse3),
+    mean_coverage_50 = formatC(mean_coverage_50, format = "f", digits = 0),
+    pretty_coverage_50 = paste0(best_coverage_502,mean_coverage_50, best_coverage_503),
+    mean_run_time_secs = formatC(mean_run_time_secs, format = "f", digits = 0),
+    pretty_run_time_secs = paste0(best_run_time_secs2,mean_run_time_secs, best_run_time_secs3)) %>%
+  mutate(pretty_run_time_secs = str_replace_all(pretty_run_time_secs, "NANANA", "--")) %>%
+  select(true_prob_curve_id, 
+         n_training, 
+         priors, 
+         pretty_kl_div,
+         pretty_rmse, 
+         pretty_coverage_50,
+         pretty_run_time_secs) %>%
+  pivot_wider(id_cols = c(true_prob_curve_id, priors), 
+              names_from = n_training, 
+              values_from = pretty_kl_div:pretty_run_time_secs)
+
+
+linesep_index <- rep("", nrow(table3_tall));
+linesep_index[c(9, 18, 27)] = "\\addlinespace";
+
+print(
+  table3_tall %>%
+    knitr::kable(format = "latex",
+                 col.names = table3_colnames,
+                 booktabs = T,
+                 longtable = F,
+                 escape = F,
+                 linesep = linesep_index, 
+                 align = c("llrrrrrrrr")) %>%
+    kable_styling(latex_options = c("HOLD_position"),
+                  full_width = F,
+                  font_size = 11) %>%
+    add_header_above(table3_header)
+)
+
+# Figure 3 ----
+
+priors_to_include = c(
+  "nonbayes1",
+  "horseshoe1",
+  "horseshoe2",
+  "gamma1",
+  #"gamma2",
+  #"gamma3",
+  "gamma4",
+  "gamma5",
+  "brms_mo")
+
+all_models <- 
+  raw_all_models %>%
+  filter(priors %in% priors_to_include) %>%
+  arrange(n_training, predictor_dist_id, true_prob_curve_id, array_id, sim_id, x) %>%
+  mutate(n_training = paste0("n = ", n_training) %>% factor() %>% fct_inorder(), 
+         bias = fitted_prob - true_prob, 
+         scenario_id = factor(scenario_id),
+         true_prob_curve_id = paste0("Curve ", true_prob_curve_id) %>% factor() %>% fct_inorder(),
+         predictor_dist_id = factor(predictor_dist_id));
+
+subset_array_ids <-
+  all_models %>%
+  filter(predictor_dist_id == 1) %>%
+  group_by(scenario_id) %>%
+  sample_n(4) %>%
+  ungroup() %>%
+  select(array_id, sim_id) %>%
+  arrange(array_id, sim_id)
+
+
+all_models_random_subset <- 
+  all_models %>%
+  #right_join(subset_array_ids) %>%
+  arrange(scenario_id, array_id, sim_id) %>%
+  mutate(n_training = fct_drop(n_training)) %>%
+  left_join(all_performance %>%
+              select(array_id, sim_id, 
+                     true_prob_curve_id, predictor_dist_id, n_training, priors, 
+                     kl_div, number_divergences) %>%
+              mutate(n_training = paste0("n = ", n_training) %>% factor() %>% fct_inorder())) %>%
+  mutate(priors = 
+           factor(priors, 
+                  levels = priors_to_include,
+                  labels = priors_pretty[priors_to_include], 
+                  ordered = T),
+         n_training = fct_drop(n_training));
+
+
+
+ggplot() +
+  geom_boxplot(data = filter(all_models_random_subset, n_training == "n = 80"),  
+               aes(x = factor(x), 
+                   y = fitted_prob, 
+                   color = priors,
+                   fill = priors),
+               position = "dodge",
+               outlier.shape = NA) +
+  #geom_line(data = all_models_randdom_subset,
+  #          aes(x = factor(x), 
+  #              y = fitted_prob, 
+  #              color = priors,
+  #              group = interaction(priors, array_id, sim_id)),
+  #          alpha = 0.4, 
+  #          size = 1.1) + 
+  geom_point(data =
+               filter(all_models,
+                      n_training == "n = 80",
+                      predictor_dist_id == 1,
+                      sim_id == 1) %>%
+               arrange(true_prob_curve_id, array_id) %>%
+               group_by(true_prob_curve_id, n_training) %>%
+               filter(array_id == dplyr::first(array_id)),
+             aes(x = factor(x), 
+                 y = true_prob), 
+             color = "black",
+             alpha = 0.9,
+             size = 1.5) +
+  facet_wrap(vars(true_prob_curve_id), nrow = 2) + 
+  coord_cartesian(ylim = c(0,1)) + 
+  scale_y_continuous(name = "Fitted / true probability") + 
+  scale_x_discrete(name = "X", labels = NULL) + 
+  scale_color_brewer(name = "Prior",
+                     palette = "Dark2",
+                     labels = c(
+                       "Isoreg" = "Isoreg",
+                       "HSIPV$(0.001)$" = expression(HSIPV(0.001)),
+                       "HSIPV$(10)$" = expression(HSIPV(10)),
+                       "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon)$" = expression(GAIPV~bgroup('(',list(frac(0.5, K+1),epsilon),')')),
+                       "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/10)$" = expression(GAIPV~bgroup('(',list(frac(0.5, K+1),frac(epsilon,10)),')')),
+                       "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/100)$" = expression(GAIPV~bgroup('(',list(frac(0.5, K+1),frac(epsilon,100)),')')),
+                       "GAIPV$(\\tfrac{0.5}{K+1})$" = expression(GAIPV~bgroup('(',frac(0.5, K+1),')')),
+                       "GAIPV$(1)$" = expression(GAIPV(1)),
+                       "brms" = "BRMS(mo)")) +
+  scale_fill_brewer(name = "Prior",
+                    palette = "Dark2",
+                    labels = c(
+                      "Isoreg" = "Isoreg",
+                      "HSIPV$(0.001)$" = expression(HSIPV(0.001)),
+                      "HSIPV$(10)$" = expression(HSIPV(10)),
+                      "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon)$" = expression(GAIPV~bgroup('(',list(frac(0.5, K+1),epsilon),')')),
+                      "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/10)$" = expression(GAIPV~bgroup('(',list(frac(0.5, K+1),frac(epsilon,10)),')')),
+                      "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/100)$" = expression(GAIPV~bgroup('(',list(frac(0.5, K+1),frac(epsilon,100)),')')),
+                      "GAIPV$(\\tfrac{0.5}{K+1})$" = expression(GAIPV~bgroup('(',frac(0.5, K+1),')')),
+                      "GAIPV$(1)$" = expression(GAIPV(1)),
+                      "brms" = "BRMS(mo)")) +
+  guides(color = guide_legend(label.hjust = 0)) + 
+  theme(legend.position = "top", 
+        legend.direction = "horizontal", 
+        legend.key.width = unit(1.5,"cm"),
+        text = element_text(size = 20));
+
+ggsave(filename = "../fig3.pdf", height = 8.75, width = 11);
+
+rm(priors_to_include);
+
+

@@ -1,0 +1,16 @@
+#!/bin/sh
+
+#SBATCH --mail-type=FAIL
+#SBATCH --mail-user=user@email.com
+#SBATCH --output=/home/out/%A_%a.out
+#SBATCH --error=/home/out/%A_%a.err
+#SBATCH --partition=standard
+
+#SBATCH --job-name=bayesianisotonic
+#SBATCH --time=0-1:00:00
+#SBATCH --mem-per-cpu=5000
+#SBATCH --array=1-400
+#SBATCH --cpus-per-task=2
+#SBATCH --nodes=1-1
+
+Rscript --vanilla /home/varying_data_run_sims.R

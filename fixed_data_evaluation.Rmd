@@ -1,0 +1,503 @@
+---
+title: "Section 3.1: Fixed-data Evaluation"
+author: ""
+date: ""
+output: html_document
+---
+
+```{r setup, include = TRUE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+klippy::klippy(position = c("top", "right"), tooltip_message = "Copy")
+```
+
+Note: This takes quite a while ($>1$ day) to run start-to-finish on a personal
+computer. You can speed this up by distributing the tasks. 
+
+### Setup
+
+First install (if necessary) then load the required R packages.
+
+```{r, message = F, warning = F}
+library(isotonicBayes);
+library(rstan);
+library(tidyverse);
+library(cir);
+library(glue);
+library(knitr);
+library(kableExtra)
+```
+
+Set `run_sims = T` to conduct the 'Fixed-data Evaluation' in Section 3.1. set
+`run_sims = F` if you have already run the code and only want to process the
+results (the files must be in the same place that they were written to, namely
+the local folder called 'out'). The last call in the script generates Figures 1
+and 2 in the manuscript.
+
+```{r}
+run_sims = TRUE;
+```
+
+```{r}
+#Helpful to print warnings when they occur for debugging
+options(warn = 1);
+# Other options
+rstan_options(auto_write = FALSE);
+options(mc.cores = parallel::detectCores());
+mc_warmup = 2.5e3;
+mc_samps = 2.5e3;
+```
+
+### Data creation
+
+Now create the data. Note that one dataset per row of `data_features` will be
+created (and held fixed). Below we create three datasets: the first with 10
+categories, eight observations per category; the second with five categories, 16
+observations per category; and the third with 10 categories, 32 observations per
+category. The variation will come from the value of `n_sim`, which denotes the
+number of distinct seeds to use for the HMC algorithm. Each distinct seed yields
+a different starting value for the algorithm.
+
+```{r}
+n_sim = 50;
+
+data_features = 
+  tibble(n_cats = c(10, 5, 10), 
+         n_per_cat = c(8, 16, 32))
+
+all_data_grouped <- 
+  hs_scales <- 
+  hs_prior_types <- 
+  ga_shapes <- 
+  ga_lower_bounds <- 
+  vector("list")
+
+for(j in 1:nrow(data_features)) {
+  
+  curr_n_cats = slice(data_features, j) %>% pull(n_cats)
+  curr_n_per_cat = slice(data_features, j) %>% pull(n_per_cat)
+  
+  hs_scales[[j]] =
+    c(horseshoe1 = 0.001,
+      horseshoe2 = 10)
+  
+  hs_prior_types[[j]] = 
+    c(horseshoe1 = "horseshoe", 
+      horseshoe2 = "horseshoe")
+  
+  ga_shapes[[j]] =
+    c(gamma1 = 0.5 / (curr_n_cats + 1), 
+      gamma2 = 0.5 / (curr_n_cats + 1), 
+      gamma3 = 0.5 / (curr_n_cats + 1), 
+      gamma4 = 0.5 / (curr_n_cats + 1), 
+      gamma5 = 1);
+  
+  
+  ga_lower_bounds[[j]] = 
+    c(gamma1 = .Machine$double.eps,
+      gamma2 = 10^(log10(.Machine$double.eps) - 1), 
+      gamma3 = 10^(log10(.Machine$double.eps) - 2), 
+      gamma4 = 0, 
+      gamma5 = 0);
+  
+  
+  all_data_grouped[[j]] = 
+    tibble(dataset_label = j, 
+           n_cats = curr_n_cats, 
+           x = 1:curr_n_cats, 
+           n = curr_n_per_cat,
+           y = round(seq(0, curr_n_per_cat, length = curr_n_cats))) %>%
+    arrange(x) %>%
+    mutate(x_cat = 1:n());
+  
+}
+rm(j, curr_n_cats, curr_n_per_cat);
+
+all_data_grouped <- bind_rows(all_data_grouped)
+
+hs_names = names(hs_scales[[1]])
+ga_names = names(ga_shapes[[1]])
+
+```
+
+### Data Analysis
+
+Now we run the numerical study, cycling through all combination of `n_sim` seeds 
+and the three unique datasets:
+
+```{r}
+if(run_sims) {
+  
+  set.seed(1);
+  stan_seeds = sample.int(.Machine$integer.max, n_sim);
+  
+  do_these_priors = c(hs_names,
+                      ga_names);
+  
+  # Pre-population the performance matrix
+  summarized_performance = 
+    crossing(
+      sim_id = 1:n_sim,
+      dataset_label = pull(all_data_grouped, dataset_label) %>% unique(),
+      priors = factor(do_these_priors) %>% fct_inorder(), 
+      #Either shape parameter (gamma prior) or scale parameter (horseshoe prior):
+      tuning_param_val = NA_real_,
+      #What is the left of the support truncated to? (0 means no truncation)
+      lower_truncation = NA_real_,
+      #how many divergent transitions were there?
+      number_divergences = NA_real_,
+      #what was the value of the gelman-rubin diagnostic?
+      rhat = NA_real_, 
+      #how many NaNs were sampled? (another symptom of poor mixing)
+      any_nan = NA_real_,
+      #time required to fit each method
+      run_time_secs = NA_real_,
+      #ratio of run time of fastest versus slowest chains
+      chain_relative_diff = NA_real_);
+  
+  alpha_nans = 
+    crossing(
+      sim_id = 1:n_sim,
+      all_data_grouped %>% select(dataset_label, x_cat),
+      priors = factor(do_these_priors) %>% fct_inorder(), 
+      value = NA_real_) %>%
+    pivot_wider(id_cols = c(sim_id, dataset_label, priors),
+                names_from = x_cat, 
+                names_prefix = "alpha", 
+                values_from = value,
+                values_fill = NA_real_);
+  
+  xi_nans = 
+    crossing(
+      sim_id = 1:n_sim,
+      all_data_grouped %>% select(dataset_label, x_cat),
+      priors = factor(do_these_priors) %>% fct_inorder(), 
+      value = NA_real_) %>%
+    pivot_wider(id_cols = c(sim_id, dataset_label, priors),
+                names_from = x_cat, 
+                names_prefix = "xi", 
+                values_from = value,
+                values_fill = NA_real_);
+  
+  
+  summarized_models = 
+    crossing(
+      all_data_grouped,
+      sim_id = 1:n_sim,
+      priors = factor(do_these_priors) %>% fct_inorder(), 
+      #
+      alphaj = NA_real_,
+      #
+      xij = NA_real_) %>%
+    arrange(sim_id, dataset_label, priors, x)
+  
+  for(i in 1:n_sim) {
+    
+    for(j in pull(all_data_grouped, dataset_label) %>% unique()) {
+      
+      curr_n_cats = 
+        data_features %>% 
+        slice(j) %>%
+        pull(n_cats)
+      
+      curr_n_per_cat = 
+        data_features %>% 
+        slice(j) %>%
+        pull(n_per_cat)
+      
+      data_grouped = 
+        all_data_grouped %>%
+        filter(dataset_label == j) %>%
+        select(-dataset_label, -n_cats)
+      
+      curr_hs_scale = hs_scales[[j]]
+      curr_hs_prior_type = hs_prior_types[[j]]
+      curr_ga_shape = ga_shapes[[j]]
+      curr_ga_lower_bound = ga_lower_bounds[[j]]
+      
+      for(curr_prior in do_these_priors) {
+        
+        cat("\n######################################\n");
+        cat("#", curr_prior, "prior :: sim_id =", i, ":: dataset =", j,  "\n");
+        cat("######################################\n\n");
+        
+        
+        if(curr_prior %in% hs_names) {
+          
+          # horseshoe
+          stan_args = 
+            list(local_dof_stan = 1, 
+                 global_dof_stan = 1,
+                 alpha_scale_stan = curr_hs_scale[[curr_prior]], 
+                 slab_precision_stan = 1);
+          
+          prior_type = curr_hs_prior_type[[curr_prior]]
+        } else {
+          
+          # gamma
+          stan_args = 
+            list(
+              alpha_shape_stan = curr_ga_shape[[curr_prior]],
+              tiny_positive_stan = curr_ga_lower_bound[[curr_prior]]);
+          
+          prior_type = "gamma"        
+        }
+        
+        curr_row_performance = 
+          with(summarized_performance, 
+               which(dataset_label == j &
+                       priors == curr_prior & 
+                       sim_id == i));
+        
+        curr_row_nans = 
+          with(alpha_nans, 
+               which(dataset_label == j &
+                       priors == curr_prior & 
+                       sim_id == i));
+        
+        stopifnot(length(curr_row_performance) == 1)
+        
+        curr_rows_models <- 
+          with(summarized_models,
+               which(dataset_label == j &
+                       priors == curr_prior & 
+                       sim_id == i));
+        
+        if(curr_prior %in% hs_names) {
+          
+          summarized_performance[curr_row_performance, "tuning_param_val"] = 
+            curr_hs_scale[[curr_prior]];
+          summarized_performance[curr_row_performance, "lower_truncation"] = 
+            0;
+        } else {
+          summarized_performance[curr_row_performance, "tuning_param_val"] = 
+            curr_ga_shape[[curr_prior]];
+          summarized_performance[curr_row_performance, "lower_truncation"] = 
+            curr_ga_lower_bound[[curr_prior]];
+        } 
+        
+        
+        # ++ Fit Stan model ----
+        curr_fit = bayesian_isotonic(data_grouped = data_grouped,
+                                     prior_type = prior_type,
+                                     stan_args = stan_args, 
+                                     # 'conf_level' must remain hard coded for this simulator
+                                     # because the function 'validate_bayesian_isotonic' assumes 
+                                     # this level
+                                     conf_level = 0.50, 
+                                     conf_level_direction = "both",
+                                     sample_from_prior_only = FALSE,
+                                     mc_warmup = mc_warmup, 
+                                     mc_samps = mc_samps, 
+                                     mc_chains = 2, 
+                                     mc_thin = 1, 
+                                     mc_stepsize = 0.1, 
+                                     # +++ phil check below (should be 0.99 for actual run)----
+                                     mc_adapt_delta = 0.99,
+                                     # +++ phil check above (should be 0.99 for actual run)----
+                                     mc_max_treedepth = 15,
+                                     verbose = TRUE, 
+                                     stan_seed = stan_seeds[i],
+                                     # +++ phil comment below ----
+                                     #return_as_stan_object = TRUE
+                                     # +++ phil comment above ----
+        );
+        
+        
+        # ++ Model performance ----
+        
+        summarized_performance[curr_row_performance, "number_divergences"] =
+          curr_fit$number_divergences;
+        summarized_performance[curr_row_performance, "rhat"] = 
+          curr_fit$max_rhat;
+        summarized_performance[curr_row_performance, "any_nan"] =
+          curr_fit$any_nan;
+        summarized_performance[curr_row_performance, "run_time_secs"] = 
+          curr_fit$total_run_time_secs;
+        summarized_performance[curr_row_performance, "chain_relative_diff"] = 
+          min(curr_fit$chain_run_times_secs) / max(curr_fit$chain_run_times_secs);
+        
+        alpha_nans <- 
+          alpha_nans %>%
+          mutate_at(vars(paste0("alpha",1:(curr_n_cats))),
+                    ~ ifelse(dataset_label == j & 
+                               priors == curr_prior & 
+                               sim_id == i, curr_fit$alpha_number_nan[1:(curr_n_cats)], .)) 
+        
+        xi_nans <- 
+          xi_nans %>%
+          mutate_at(vars(paste0("xi",1:(curr_n_cats))),
+                    ~ ifelse(dataset_label == j & 
+                               priors == curr_prior & 
+                               sim_id == i, curr_fit$xi_number_nan[1:(curr_n_cats)], .)) 
+        
+        summarized_models[curr_rows_models, "xij"] = 
+          apply(curr_fit$all_draws$xi, 2, median)
+        
+        summarized_models[curr_rows_models, "alphaj"] = 
+          apply(curr_fit$all_draws$alpha[, 1:curr_n_cats, drop = F], 2, median)
+        
+        
+      } 
+      
+      write_csv(filter(summarized_performance, 
+                       dataset_label <= j, 
+                       sim_id <= i),
+                path = "out/exemplar2_fixed_data_performance.csv",
+                append = FALSE);
+      
+      write_csv(filter(summarized_models,
+                       dataset_label <= j, 
+                       sim_id <= i),
+                path = "out/exemplar2_fixed_data_models.csv",
+                append = FALSE);
+      
+      write_csv(filter(xi_nans, 
+                       dataset_label <= j, 
+                       sim_id <= i),
+                path = "out/exemplar2_xi_nans.csv",
+                append = FALSE);
+      
+      write_csv(filter(alpha_nans, 
+                       dataset_label <= j, 
+                       sim_id <= i),
+                path = "out/exemplar2_alpha_nans.csv",
+                append = FALSE);
+      
+      rm(stan_args, curr_prior);
+      rm(curr_row_performance, curr_row_nans, curr_rows_models);
+      
+      
+    }
+    rm(curr_ga_shape, curr_hs_scale, curr_ga_lower_bound);
+    rm(data_grouped, curr_n_cats, curr_n_per_cat)
+    
+  }
+  
+} 
+```
+
+### Processing the results
+
+Having run the numerical study, we process the results. 
+
+```{r}
+  summarized_performance = 
+    read_csv("out/exemplar2_fixed_data_performance.csv")
+  
+  summarized_models = 
+    read_csv("out/exemplar2_fixed_data_models.csv")
+  
+  xi_nans = 
+    read_csv("out/exemplar2_xi_nans.csv")
+  
+  alpha_nans =
+    read_csv("out/exemplar2_alpha_nans.csv")
+  
+  
+  table2 <-
+    summarized_performance %>% 
+    group_by(dataset_label, priors) %>% 
+    summarize(median_div = median(number_divergences),
+              mean_any_nan = mean(any_nan > 0),
+              median_rhat = median(rhat, na.rm = T),
+              median_runtime = median(run_time_secs)
+    ) %>%
+    ungroup() %>% 
+    mutate(
+      median_rhat = ifelse(median_rhat < 1e9, formatC(median_rhat, format = "f", digits = 2), "$>10^9$"),
+      div = round(median_div),
+      nan = formatC(mean_any_nan, format = "f", digits = 2), 
+      runtime = round(median_runtime)) %>%
+    mutate(
+      priors_pretty = 
+        case_when(
+          priors == "horseshoe1" ~ "HSIPV$(0.001)$", 
+          priors == "horseshoe2" ~ "HSIPV$(10)$", 
+          priors == "gamma1" ~ "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon)$",
+          priors == "gamma2" ~ "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/10)$",
+          priors == "gamma3" ~ "GAIPV$(\\tfrac{0.5}{K+1}, \\epsilon/100)$",
+          priors == "gamma4" ~ "GAIPV$(\\tfrac{0.5}{K+1})$",
+          priors == "gamma5" ~ "GAIPV$(1)$") %>% 
+        factor() %>%
+        fct_inorder()) %>%
+    select(dataset_label, priors_pretty, div, nan, median_rhat, runtime)
+  
+  
+  linesep_index <- rep("", nrow(table2));
+  linesep_index[c(7, 14)] = "\\addlinespace";
+  
+  table2 %>%
+    knitr::kable(format = "latex",
+                 col.names = c("Dataset", "Prior", "Divergences", "\\% NaN", "$\\hat{R}$", "Run time, s"),
+                 booktabs = T,
+                 longtable = F,
+                 escape = F,
+                 linesep = linesep_index, 
+                 align = c("llrrrr")) %>%
+    kable_styling(latex_options = c("HOLD_position"),
+                  full_width = F,
+                  font_size = 11) %>%
+    print()
+  
+  
+  summarized_models <-
+    summarized_models %>%
+    filter(priors != "dirichlet1") %>%
+    mutate(dataset_pretty_label = 
+             glue("list(K == {n_cats}, n[j] == {n})") %>% 
+             as.character() %>%
+             factor() %>%
+             fct_inorder(),
+           priors_pretty_label = 
+             case_when(
+               priors == "gamma1" ~ "GAIPV~bgroup('(',list(frac(0.5, K+1),epsilon),')')",
+               priors == "gamma2" ~ "GAIPV~bgroup('(',list(frac(0.5, K+1),frac(epsilon,10)),')')",
+               priors == "gamma3" ~ "GAIPV~bgroup('(',list(frac(0.5, K+1),frac(epsilon,100)),')')",
+               priors == "gamma4" ~ "GAIPV~bgroup('(',frac(0.5, K+1),')')",
+               priors == "gamma5" ~ "GAIPV(1)",
+               priors == "horseshoe1" ~ "HSIPV(0.001)",
+               priors == "horseshoe2" ~ "HSIPV(10)"
+             ) %>% fct_inorder())
+  
+  ggplot(summarized_models) + 
+    geom_boxplot(aes(x = factor(x), 
+                     y = xij),
+                 lwd = 0.25,
+                 coef = 1e6, 
+                 fill = grey(0.2),
+                 color = grey(0.2)) + 
+    geom_point(aes(x = factor(x), 
+                   y = I(y/n)),
+               size = 2.5,
+               color = "sienna2",
+               shape = "diamond") + 
+    facet_grid(priors_pretty_label ~ dataset_pretty_label, 
+               scales = "free_x",
+               labeller = label_parsed) + 
+    scale_x_discrete(name = "j") +
+    scale_y_continuous(name = expression(xi[j])) +
+    theme(strip.text = element_text(size = 10),
+          text = element_text(size = 18));
+  ggsave(filename = "numerical_xi.pdf", height = 12, width = 9)
+  
+  
+  ggplot(summarized_models) + 
+    geom_boxplot(aes(x = factor(x), 
+                     y = log10(alphaj)),
+                 lwd = 0.25,
+                 coef = 1e6,
+                 fill = grey(0.2),
+                 color = grey(0.2)) + 
+    facet_grid(priors_pretty_label ~ dataset_pretty_label, 
+               labeller = label_parsed, 
+               scales = "free") + 
+    scale_x_discrete(name = "j") +
+    scale_y_continuous(name = expression(log(alpha[j]))) +
+    theme(strip.text = element_text(size = 10),
+          text = element_text(size = 18));
+  ggsave(filename = "numerical_alpha.pdf", height = 12, width = 9)
+  
+
+```
+
+
