@@ -1,5 +1,4 @@
-### `bayesianIsotonic` Numerical Studies
-Code to accompany Boonstra, Owen, and Kang (2023)
+### Implement numerical studies` 
 
 This repository accompanies "Shrinkage priors for isotonic probability vectors
 and binary data modeling" by Philip S. Boonstra, Daniel R. Owen, and Jian Kang
