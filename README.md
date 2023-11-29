@@ -1,4 +1,4 @@
-# `bayesianIsotonic` Numerical Studies
+### `bayesianIsotonic` Numerical Studies
 Code to accompany Boonstra, Owen, and Kang (2023)
 
 This repository accompanies "Shrinkage priors for isotonic probability vectors
