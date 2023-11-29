@@ -6,6 +6,14 @@ and binary data modeling" by Philip S. Boonstra, Daniel R. Owen, and Jian Kang
 (2023). It allows for reproducing the numerical studies presented in Section 3
 of that manuscript. 
 
+You should be familiar with the R package `isotonicBayes`, which implements the
+methodology. you can install via
+`remotes::install_github("psboonstra/isotonicBayes", build_vignettes = TRUE)`.
+You can read the introduction to the R functions in by running
+`vignette("introduction", "isotonicBayes")` and you can see the code for
+conducting Tutorial 1: Dose Escalation Example (Section 2.3 of the paper) by
+running `vignette("tutorial1", "isotonicBayes")`.
+
 There are five main parts to this
 
 1. `fixed_data_evaluation.Rmd` / `fixed_data_evaluation.html` /
